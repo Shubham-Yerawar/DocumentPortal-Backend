@@ -2,6 +2,8 @@ const fs = require('fs');
 const pathModule = require('path');
 const httpStatus = require('http-status');
 const mime = require('mime');
+const excelToJson = require('convert-excel-to-json');
+var shortid = require('shortid');
 // const fileType = require('file-type');
 
 const {
@@ -13,8 +15,11 @@ const {
   incrementDownloadCount,
   markAttachmentToBeIndexedInES,
   incrementDocumentViewCount,
-  getAttachmentDetails
+  getAttachmentDetails,
 } = require('../repository');
+
+const { addDocument } = require('./documentUtilities/document.add');
+
 const IndexingService = require('../services/indexing.service');
 const ElasticService = require('../services/elastic.service');
 
@@ -30,23 +35,22 @@ const ElasticService = require('../services/elastic.service');
 
 // to get documents following search query
 exports.get = async ctx => {
-
-  const { query , size , offset } = ctx.query;
+  const { query, size, offset } = ctx.query;
   let next = false;
   try {
-    var rawResponse = await ElasticService.getDocuments(query,size,offset);
+    var rawResponse = await ElasticService.getDocuments(query, size, offset);
     // response is an array of separate documents stored in ElasticSearch
     // We need to merge the documents who have same mongoId
-    
+
     const totalDocuments = rawResponse.total;
     let newOffset = 0;
     // console.log(totalDocuments);
     let _size = parseInt(size);
     let _offset = parseInt(offset);
-    
-    if( _size + _offset + 1 <= totalDocuments ){
+
+    if (_size + _offset + 1 <= totalDocuments) {
       next = true;
-      newOffset = _size+_offset
+      newOffset = _size + _offset;
     }
 
     const response = rawResponse.hits;
@@ -59,7 +63,6 @@ exports.get = async ctx => {
     if (response.length > 0) {
       // TODO: Look for some good way of doing it. current is O(n2)
       response.forEach(document => {
-     
         // check if mongoId is present in mongoIdArray
         // if not then add else get that object and just update the attachments field with
         // current document's file data
@@ -82,8 +85,6 @@ exports.get = async ctx => {
         //   //       });
         //   //     }
         //   //   });
-
-
 
         //   } else {
         //     // id not present in mongoIdArray
@@ -108,8 +109,8 @@ exports.get = async ctx => {
         //   }
         // }
 
-        console.log("found : ",actualDocument.user_defined_data.mongoId);
-        if(actualDocument.user_defined_data){
+        console.log('found : ', actualDocument.user_defined_data.mongoId);
+        if (actualDocument.user_defined_data) {
           output.push({
             id: actualDocument.user_defined_data.mongoId,
             title: actualDocument.user_defined_data.title,
@@ -125,22 +126,21 @@ exports.get = async ctx => {
                 fileName: actualDocument.user_defined_data.originalFileName,
                 extension: actualDocument.file.extension,
                 fileUrl: actualDocument.file.filename,
-                downloadCount: actualDocument.user_defined_data.downloadCount
+                downloadCount: actualDocument.user_defined_data.downloadCount,
               },
             ],
           });
-          console.log('pushed:',actualDocument.user_defined_data.mongoId);
+          console.log('pushed:', actualDocument.user_defined_data.mongoId);
         }
-
       });
 
-      console.log('here',output.length);
+      console.log('here', output.length);
       sendBack = {
         message: 'Documents found.',
         documents: output,
         totalDocuments,
-        next : next,
-        newOffset : newOffset
+        next: next,
+        newOffset: newOffset,
       };
     } else {
       sendBack = {
@@ -151,7 +151,7 @@ exports.get = async ctx => {
     ctx.body = sendBack;
     ctx.status = httpStatus.OK;
   } catch (error) {
-    console.log('werfdfvcd',error);
+    console.log('werfdfvcd', error);
     ctx.status = httpStatus.INTERNAL_SERVER_ERROR;
     ctx.body = {
       message: 'Something went wrong',
@@ -161,144 +161,47 @@ exports.get = async ctx => {
 
 //to get a single document by id
 // assumption : id needs to be mongoId
-exports.getOne = async ctx =>{
-// console.log('get on ecalled');
+exports.getOne = async ctx => {
+  // console.log('get on ecalled');
   const { id } = ctx.params;
 
-  try{
+  try {
     await incrementDocumentViewCount(id);
-    const document  = await getDocumentById(id);
-    console.log('document found',document);
+    const document = await getDocumentById(id);
+    console.log('document found', document);
     await markDocumentToBeIndexedInES(id);
-    ctx.body= {
+    ctx.body = {
       message: 'document found',
-      document
-    }
-
-  }catch(error){
-    console.log('error fetching document from mongo',error);
+      document,
+    };
+  } catch (error) {
+    console.log('error fetching document from mongo', error);
     ctx.status = httpStatus.BAD_REQUEST;
-    ctx.body= {message:'Error fetching document'};
+    ctx.body = { message: 'Error fetching document' };
   }
-
 };
 
-// to add a new document
 exports.add = async ctx => {
   let authorised = false;
-  const files = ctx.request.files.attachments;
-  // console.log('----files added ----',files);
   try {
     // check for valid user
     await getUserById(ctx.request.body.authorId);
     authorised = true;
+    // console.log('---check body---',ctx.request.body);
+    // console.log('---check: file type---', typeof ctx.request.files.attachments);
 
-    if(files.length > 5 || files.length < 0){
-      ctx.status = httpStatus.BAD_REQUEST;
-      ctx.body = {message:'Too many files. Maximum 5 files allowed per document.'};
-      return;
-    }
+    const { body, files } = ctx.request;
 
-    // atleast one file should be present
-    if (files) {
-      let fileInfo = [];
-      let currentFiles = []; // stores the names of all files
-      if (files instanceof Array) {
-        // for multiple files
-        files.forEach(file => {
-          if (_isFileTypeAllowed(file)) {
-            let name = file.name;
-            let extension = name.substr(name.lastIndexOf('.') + 1);
-            let path = pathModule.basename(file.path);
-            let type = file.type;
-            if (!currentFiles.includes(name)) {
-              fileInfo.push({
-                fileName:name,
-                fileUrl:path,
-                type,
-                extension,
-                indexed_in_ES: false,
-                downloadCount: 0,
-              });
-              currentFiles.push(name);
-            }
-          }
-        });
-      } else {
-        if (_isFileTypeAllowed(files)) {
-          // for single file
-          let name = files.name;
-          let extension = name.substr(name.lastIndexOf('.') + 1);
-          let path = pathModule.basename(files.path);
-          let type = files.type;
-          fileInfo.push({
-            fileName:name,
-            fileUrl:path,
-            type,
-            extension,
-            indexed_in_ES: false,
-            downloadCount: 0,
-          });
-        }
-      }
+    const result = await addDocument(body, files);
 
-      if (fileInfo.length > 0) {
-        const { searchTags, ...body } = ctx.request.body;
+    console.log('--doc : success---', result);
 
-        let searchTagsArray = [];
-
-        // console.log('looking for array type:',typeof(searchTags));
-        if (searchTags instanceof Array) {
-          // console.log('array searchtags');
-          searchTagsArray = searchTagsArray.concat(searchTags);
-        } else {
-          // console.log('string searchtags');
-          searchTagsArray = searchTags.split(',');
-        }
-
-        const document = {
-          ...body,
-          searchTags: searchTagsArray,
-          attachments: fileInfo,
-          views: 0,
-          claps: {
-            totalClaps: 0,
-          },
-        };
-        var _id;
-        // adding to mongodb
-        await addNewDocument(document).then(response => {
-          _id = response.ops[0]._id;
-        });
-
-        const response = {
-          message: 'Document Added Successfully. It will take some time to get rolling.',
-        };
-        ctx.body = response;
-        ctx.status = httpStatus.OK;
-      } else {
-        // none of the uploaded files is supported so aborting with an error
-        ctx.status = httpStatus.BAD_REQUEST;
-        ctx.body = {
-          message: 'Unsupported files',
-        };
-      }
-    } else {
-      console.log('no files found');
-      const response = {
-        message: 'No attachments found.',
-      };
-      ctx.body = response;
-      ctx.status = httpStatus.BAD_REQUEST;
-    }
+    ctx.status = result.status;
+    ctx.body = result.body;
   } catch (error) {
-    console.log('error:', error);
-
-    _removeFiles(files);
-    ctx.body = {
-      message: authorised ? 'INTERNAL_SERVER_ERROR' : 'UNAUTHORIZED',
-    };
-    ctx.status = authorised ? httpStatus.INTERNAL_SERVER_ERROR : httpStatus.UNAUTHORIZED;
+    console.log('---error---', error);
+    ctx.status = authorised ? error.status : httpStatus.UNAUTHORIZED;
+    ctx.body = authorised ? error.body : { message: 'Unauthorised' };
   }
 };
 
@@ -338,8 +241,8 @@ exports.update = async ctx => {
 
               if (!currentFiles.includes(name)) {
                 fileInfo.push({
-                  fileName:name,
-                  fileUrl:path,
+                  fileName: name,
+                  fileUrl: path,
                   type,
                   extension,
                   indexed_in_ES: false,
@@ -357,8 +260,8 @@ exports.update = async ctx => {
             let path = pathModule.basename(file.path);
             let type = files.type;
             fileInfo.push({
-              fileName:name,
-              fileUrl:path,
+              fileName: name,
+              fileUrl: path,
               type,
               extension,
               indexed_in_ES: false,
@@ -522,7 +425,7 @@ exports.downloadFile = async ctx => {
   try {
     var file = pathModule.join(__dirname, '../../../uploads/' + queryFile);
     const attachment = await getAttachmentDetails(queryFile);
-    console.log('---file attachment---',attachment);
+    console.log('---file attachment---', attachment);
     // var filename = pathModule.basename(file);
     let fileName = attachment.attachments[0].fileName;
     let mimetype = mime.getType(file);
@@ -549,6 +452,105 @@ exports.downloadFile = async ctx => {
       message: 'Specified file doesnot exist.',
     };
   }
+};
+
+exports.bulkUpload = async ctx => {
+  // console.log('bulk called');
+  // console.log('-----mappings------', ctx.request.files.mappings);
+  // console.log('-------body--------', ctx.request.body);
+  let mappings = ctx.request.files.mappings;
+  let { authorId, authorName } = ctx.request.body;
+  let filePath = pathModule.join(__dirname , "../../../"+mappings.path);
+  // console.log('----filePath-----',filePath);
+  const result = excelToJson({
+    sourceFile: filePath ,
+    header:{
+      rows: 1
+    },
+    columnToKey: {
+      A: 'title',
+      B: 'description',
+      C: 'searchTags',
+      D: 'category',
+      E: 'attachments'
+    },
+  });
+
+  // console.log('----------------------');
+  // console.log(result.Sheet1);
+  // console.log('----------------------');
+
+  // check for valid user
+  // await getUserById(authorId);
+
+  let documentArray = [];
+
+  result.Sheet1.forEach(jsonDocument=>{
+    documentArray.push(
+      {
+        formFields:{
+          title: jsonDocument.title,
+          description: jsonDocument.description,
+          category : jsonDocument.category,
+          authorId,
+          authorName,
+          searchTags: jsonDocument.searchTags.split(','),
+        },
+        fileNames: jsonDocument.attachments.split(','),
+        files:{attachments:[]}
+      }
+    )
+  });
+
+  // console.log('-----done --------', documentArray);
+
+  documentArray.forEach(document=>{
+    document.fileNames.forEach(file=>{
+      let extension = file.substr(file.lastIndexOf('.') + 1);
+      let filePath = pathModule.join(__dirname , "../../../bulk_uploads/",file);
+      let destinationPath = pathModule.join(__dirname,`../../../uploads/upload_${shortid.generate()}.${extension}`);
+      document.files.attachments.push({
+        name:file,
+        path: destinationPath,
+        type: mime.getType(filePath)
+      });
+    })
+  });
+
+  documentArray.forEach(async document =>{
+    try{
+      await addDocument(document.formFields,document.files);
+      // move files so that fscrawler will work
+
+      document.files.attachments.forEach(file=>{
+        let oldPath = pathModule.join(__dirname , "../../../bulk_uploads/",file.name);
+        let newPath = file.path;
+        fs.rename(oldPath, newPath, function(err) {
+          if (err) throw err;
+          console.log('Successfully renamed - AKA moved!');
+        });
+      })
+    }catch(error){
+      console.log('----error------',error);
+    }
+  });
+
+  //remove the mappings file
+  fs.unlink(filePath, function(err) {
+    if (err && err.code == 'ENOENT') {
+      // file doens't exist
+      console.info("File doesn't exist, won't remove it.");
+    } else if (err) {
+      // other errors, e.g. maybe we don't have enough permission
+      console.error('Error occurred while trying to remove file');
+    } else {
+      console.info(`removed`);
+    }
+  });
+
+  ctx.status = 200;
+  ctx.body={message:'Documents added successfully. It will take more time than usual to get rolling'}
+
 };
 
 // ----------------------------------
@@ -617,7 +619,7 @@ const _isFileTypeAllowed = file => {
 };
 
 // not used as of now
-const _moveFiles = files => {
+const _moveFiles = (oldPath, newPath) => {
   files.forEach(file => {
     var oldPath = path.join(__dirname, `../../../${file.path}`);
     // console.log(oldPath);

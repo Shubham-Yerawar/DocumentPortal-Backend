@@ -29,7 +29,7 @@ exports.signup = async ctx => {
 
   if (body.password === body.confirmPassword) {
     try {
-      await isUniqueUser(body.username);
+      await isUniqueUser(body.username,body.employeeId);
       try {
          body.favouriteDocuments = [];
 
@@ -49,7 +49,7 @@ exports.signup = async ctx => {
       }
     } catch (error) {
       response = {
-        message: 'username is already taken. please try again with different username.',
+        message: 'User already exists. Try again with different username.',
       };
       ctx.status = httpStatus.BAD_REQUEST;
       ctx.body = response;

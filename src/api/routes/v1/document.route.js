@@ -32,6 +32,7 @@ router
     // ensureAuthenticated,
     controller.downloadFile,
   )
+  .post('/bulk', ensureAuthenticated, controller.bulkUpload)
   .get('/:id',validate(validation.getOne),ensureAuthenticated,controller.getOne)
   .delete('/:id', validate(validation.delete), ensureAuthenticated, controller.delete)
 

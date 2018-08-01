@@ -12,20 +12,30 @@ exports.configureDatabaseAndConnect = (_db, _connect) => {
 };
 
 // to check for unique username
-const isUniqueUser = username =>
+const isUniqueUser = (username,employeeId) =>
   new Promise(async (resolve, reject) => {
     if (!db) {
       await connect();
     }
 
+    let query = {
+      "$or":[
+        {username : username},
+        {employeeId: parseInt(employeeId)}
+      ]
+    };
+
     try {
       db.collection(database.userCollection)
-        .find({ username: username })
+        .find(query)
         .toArray()
         .then(response => {
-          // console.log('checking username :',response);
-          if (response.length > 0) return reject();
-          resolve();
+          console.log('checking username :',response);
+          if (response.length > 0){
+            reject();
+          } else{
+            resolve();
+          }
         })
         .catch(error => {
           console.log('error finding a unique user');
